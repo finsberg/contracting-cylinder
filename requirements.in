@@ -1,3 +1,5 @@
 meshio
 numpy
 fenics-pulse
+matplotlib
+h5py

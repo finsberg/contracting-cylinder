@@ -57,6 +57,7 @@ def load_geometry(
     marker_name = outdir / "markers.json"
 
     if dolfin.MPI.comm_world.size == 1:
+        # Only use gmsh when running in serial
         msh = meshio.gmsh.read(msh_file)
 
         outdir.mkdir(exist_ok=True, parents=True)
