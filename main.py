@@ -3,6 +3,7 @@ import dolfin
 import pulse
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import cm
 import h5py
 
 from geometry import load_geometry
@@ -67,8 +68,8 @@ def main(resultsdir="results", datadir="data"):
 
     problem = pulse.MechanicsProblem(geometry, material, bcs)
 
-    W_rad = dolfin.VectorFunctionSpace(geometry.mesh, "DG", 1)
-    rad = dolfin.Function(W_rad)
+    W_DG1 = dolfin.VectorFunctionSpace(geometry.mesh, "DG", 1)
+    rad = dolfin.Function(W_DG1)
     rad.interpolate(
         dolfin.Expression(
             (
@@ -79,19 +80,32 @@ def main(resultsdir="results", datadir="data"):
             degree=1,
         )
     )
+    circ = dolfin.Function(W_DG1)
+    circ.interpolate(
+        dolfin.Expression(
+            (
+                "0",
+                "x[2]/sqrt(x[1]*x[1] + x[2]*x[2])",
+                "-x[1]/sqrt(x[1]*x[1] + x[2]*x[2])",
+            ),
+            degree=1,
+        )
+    )
 
     V_DG1 = dolfin.FunctionSpace(geometry.mesh, "DG", 1)
     proj = Projector(V_DG1)
     sigma_xx = dolfin.Function(V_DG1)
     sigma_r = dolfin.Function(V_DG1)
+    sigma_c = dolfin.Function(V_DG1)
     E_xx = dolfin.Function(V_DG1)
     E_r = dolfin.Function(V_DG1)
+    E_c = dolfin.Function(V_DG1)
 
     N = 50
     t = np.linspace(0, 1, N)
     amp = ca_transient(t)
-    np.save("t.npy", t)
-    np.save("gamma.npy", amp)
+    np.save(Path(resultsdir) / "t.npy", t)
+    np.save(Path(resultsdir) / "gamma.npy", amp)
 
     output = Path(resultsdir) / "results.xdmf"
     output.unlink(missing_ok=True)
@@ -106,8 +120,10 @@ def main(resultsdir="results", datadir="data"):
 
         proj.project(sigma_xx, sigma[0, 0])
         proj.project(sigma_r, dolfin.inner(rad, sigma * rad))
+        proj.project(sigma_c, dolfin.inner(circ, sigma * circ))
         proj.project(E_xx, E[0, 0])
         proj.project(E_r, dolfin.inner(rad, E * rad))
+        proj.project(E_c, dolfin.inner(circ, E * circ))
 
         with dolfin.XDMFFile(output.as_posix()) as f:
             f.write_checkpoint(
@@ -139,6 +155,13 @@ def main(resultsdir="results", datadir="data"):
                 append=True,
             )
             f.write_checkpoint(
+                sigma_c,
+                function_name="sigma_c",
+                time_step=ti,
+                encoding=dolfin.XDMFFile.Encoding.HDF5,
+                append=True,
+            )
+            f.write_checkpoint(
                 E_xx,
                 function_name="E_xx",
                 time_step=ti,
@@ -147,7 +170,14 @@ def main(resultsdir="results", datadir="data"):
             )
             f.write_checkpoint(
                 E_r,
-                function_name="E_r2",
+                function_name="E_r",
+                time_step=ti,
+                encoding=dolfin.XDMFFile.Encoding.HDF5,
+                append=True,
+            )
+            f.write_checkpoint(
+                E_c,
+                function_name="E_c",
                 time_step=ti,
                 encoding=dolfin.XDMFFile.Encoding.HDF5,
                 append=True,
@@ -182,7 +212,7 @@ def postprocess(resultsdir="results", datadir="data", figdir="figures"):
             f.read_checkpoint(sigma_xx, "sigma_xx", i)
             f.read_checkpoint(sigma_r, "sigma_r", i)
             f.read_checkpoint(E_xx, "E_xx", i)
-            f.read_checkpoint(E_r, "E_r2", i)
+            f.read_checkpoint(E_r, "E_r", i)
             f.read_checkpoint(p, "p", i)
 
             for j, point in enumerate(points):
@@ -198,14 +228,15 @@ def postprocess(resultsdir="results", datadir="data", figdir="figures"):
     gamma = np.load(Path(resultsdir) / "gamma.npy")
 
     fig, ax = plt.subplots(3, 2, sharex=True, figsize=(10, 8))
+
     lines = []
     labels = []
     for j, point in enumerate(points):
-        ax[0, 0].plot(t, sigma_xx_arr[:, j])
-        ax[1, 0].plot(t, sigma_r_arr[:, j])
-        ax[2, 0].plot(t, p_arr[:, j])
-        ax[0, 1].plot(t, E_xx_arr[:, j])
-        (l,) = ax[1, 1].plot(t, E_r_arr[:, j])
+        ax[0, 0].plot(t, sigma_xx_arr[:, j], color=cm.tab20(point))
+        ax[1, 0].plot(t, sigma_r_arr[:, j], color=cm.tab20(point))
+        ax[2, 0].plot(t, p_arr[:, j], color=cm.tab20(point))
+        ax[0, 1].plot(t, E_xx_arr[:, j], color=cm.tab20(point))
+        (l,) = ax[1, 1].plot(t, E_r_arr[:, j], color=cm.tab20(point))
         lines.append(l)
         labels.append(f"$r = {point:.1f}$")
 
