@@ -133,7 +133,7 @@ def main(resultsdir="results", datadir="data"):
             )
             f.write_checkpoint(
                 sigma_r,
-                function_name="sigma_r2",
+                function_name="sigma_r",
                 time_step=ti,
                 encoding=dolfin.XDMFFile.Encoding.HDF5,
                 append=True,
@@ -180,7 +180,7 @@ def postprocess(resultsdir="results", datadir="data", figdir="figures"):
     with dolfin.XDMFFile(output.as_posix()) as f:
         for i in range(N):
             f.read_checkpoint(sigma_xx, "sigma_xx", i)
-            f.read_checkpoint(sigma_r, "sigma_r2", i)
+            f.read_checkpoint(sigma_r, "sigma_r", i)
             f.read_checkpoint(E_xx, "E_xx", i)
             f.read_checkpoint(E_r, "E_r2", i)
             f.read_checkpoint(p, "p", i)
@@ -222,5 +222,5 @@ def postprocess(resultsdir="results", datadir="data", figdir="figures"):
 
 
 if __name__ == "__main__":
-    # main()
+    main()
     postprocess()
