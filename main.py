@@ -2,12 +2,11 @@ from pathlib import Path
 import dolfin
 import pulse
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib import cm
-import h5py
+
 
 from geometry import load_geometry
 from utils import Projector
+import postprocess
 
 
 def ca_transient(t, tstart=0.05, ca_ampl=0.3):
@@ -30,38 +29,82 @@ def ca_transient(t, tstart=0.05, ca_ampl=0.3):
     return ca
 
 
-def main(resultsdir="results", datadir="data"):
+def run(
+    resultsdir="results",
+    datadir="data",
+    spring=1.0,
+    overwrite: bool = False,
+    varying_gamma: bool = False,
+):
     pulse.set_log_level(10)
+    Path(resultsdir).mkdir(exist_ok=True, parents=True)
+    output = Path(resultsdir) / "results.xdmf"
+    if output.is_file() and not overwrite:
+        print(f"Output {output} already exists")
+        return
+    output.unlink(missing_ok=True)
+    output.with_suffix(".h5").unlink(missing_ok=True)
+
+    geo = load_geometry(msh_file=Path(datadir) / "cell.msh")._asdict()
 
     microstructure = pulse.Microstructure(
         f0=dolfin.as_vector([1.0, 0.0, 0.0]),
         s0=dolfin.as_vector([0.0, 1.0, 0.0]),
         n0=dolfin.as_vector([0.0, 0.0, 1.0]),
     )
+
     geometry = pulse.Geometry(
-        **load_geometry(msh_file=Path(datadir) / "cell.msh")._asdict(),
+        **geo,
         microstructure=microstructure,
     )
 
     gamma = dolfin.Constant(0.0)
+    if varying_gamma:
+        V_CG1 = dolfin.FunctionSpace(geometry.mesh, "CG", 1)
+        gamma_expr = dolfin.Expression("x[1]*x[1] + x[2]*x[2]", degree=2)
+        activation = dolfin.Function(V_CG1)
+        activation.interpolate(gamma_expr)
+        activation *= gamma
+    else:
+        activation = gamma
 
-    matparams = pulse.HolzapfelOgden.default_parameters()
+    matparams = {
+        "a": 2.280,
+        "b": 9.726,
+        "a_f": 1.685,
+        "b_f": 15.779,
+        "a_s": 0.0,
+        "b_s": 0.0,
+        "a_fs": 0.0,
+        "b_fs": 0.0,
+    }
+
+    # matparams = pulse.HolzapfelOgden.default_parameters()
     material = pulse.HolzapfelOgden(
         active_model="active_strain",
-        activation=gamma,
+        activation=activation,
         parameters=matparams,
         f0=geometry.f0,
         s0=geometry.s0,
         n0=geometry.n0,
     )
 
-    spring = 1.0
+    # matparams = pulse.Guccione.default_parameters()
+    # material = pulse.Guccione(
+    #     active_model="active_strain",
+    #     activation=activation,
+    #     parameters=matparams,
+    #     f0=geometry.f0,
+    #     s0=geometry.s0,
+    #     n0=geometry.n0,
+    # )
+
     robin_bc = [
         pulse.RobinBC(
-            value=dolfin.Constant(spring), marker=geometry.markers["Left"][0]
+            value=dolfin.Constant(spring), marker=geometry.markers["Right"][0]
         ),
         pulse.RobinBC(
-            value=dolfin.Constant(spring), marker=geometry.markers["Right"][0]
+            value=dolfin.Constant(spring), marker=geometry.markers["Left"][0]
         ),
     ]
     bcs = pulse.BoundaryConditions(dirichlet=[lambda x: []], neumann=[], robin=robin_bc)
@@ -92,7 +135,7 @@ def main(resultsdir="results", datadir="data"):
         )
     )
 
-    V_DG1 = dolfin.FunctionSpace(geometry.mesh, "DG", 1)
+    V_DG1 = dolfin.FunctionSpace(geometry.mesh, "DG", 2)
     proj = Projector(V_DG1)
     sigma_xx = dolfin.Function(V_DG1)
     sigma_r = dolfin.Function(V_DG1)
@@ -103,13 +146,9 @@ def main(resultsdir="results", datadir="data"):
 
     N = 50
     t = np.linspace(0, 1, N)
-    amp = ca_transient(t)
+    amp = ca_transient(t, ca_ampl=0.2)
     np.save(Path(resultsdir) / "t.npy", t)
     np.save(Path(resultsdir) / "gamma.npy", amp)
-
-    output = Path(resultsdir) / "results.xdmf"
-    output.unlink(missing_ok=True)
-    output.with_suffix(".h5").unlink(missing_ok=True)
 
     for i, (ti, g) in enumerate(zip(t, amp)):
         pulse.iterate.iterate(problem, gamma, g, initial_number_of_steps=20)
@@ -184,74 +223,43 @@ def main(resultsdir="results", datadir="data"):
             )
 
 
-def postprocess(resultsdir="results", datadir="data", figdir="figures"):
-    output = Path(resultsdir) / "results.xdmf"
-    geo = load_geometry(msh_file=Path(datadir) / "cell.msh")
-    V_DG1 = dolfin.FunctionSpace(geo.mesh, "DG", 1)
-    V_CG1 = dolfin.FunctionSpace(geo.mesh, "CG", 1)
+def run_basic():
+    run(overwrite=True)
+    postprocess.postprocess_basic()
 
-    sigma_xx = dolfin.Function(V_DG1)
-    sigma_r = dolfin.Function(V_DG1)
-    E_xx = dolfin.Function(V_DG1)
-    E_r = dolfin.Function(V_DG1)
-    p = dolfin.Function(V_CG1)
 
-    with h5py.File(output.with_suffix(".h5"), "r") as f:
-        N = len(f["u"].keys())
+def run_varing_gamma():
+    run(resultsdir="results_varying_gamma", varying_gamma=True, overwrite=True)
+    postprocess.postprocess_basic(
+        resultsdir="results_varying_gamma", figdir="figures_varying_gamma"
+    )
 
-    points = np.arange(0, 1.1, 0.1)
 
-    sigma_xx_arr = np.zeros((N, len(points)))
-    sigma_r_arr = np.zeros((N, len(points)))
-    E_xx_arr = np.zeros((N, len(points)))
-    E_r_arr = np.zeros((N, len(points)))
-    p_arr = np.zeros((N, len(points)))
+def effect_of_spring():
+    springs = [0.5, 1.0, 5.0, 10.0]
+    resultdirs = {spring: f"results_spring{spring}" for spring in springs}
+    for spring in springs:
+        print("Spring : ", spring)
+        run(resultsdir=resultdirs[spring], spring=spring)
+    postprocess.postprocess_effect_of_spring(resultdirs=resultdirs)
 
-    with dolfin.XDMFFile(output.as_posix()) as f:
-        for i in range(N):
-            f.read_checkpoint(sigma_xx, "sigma_xx", i)
-            f.read_checkpoint(sigma_r, "sigma_r", i)
-            f.read_checkpoint(E_xx, "E_xx", i)
-            f.read_checkpoint(E_r, "E_r", i)
-            f.read_checkpoint(p, "p", i)
 
-            for j, point in enumerate(points):
-                sigma_xx_arr[i, j] = sigma_xx(0, 0, point)
-                sigma_r_arr[i, j] = sigma_r(0, 0, point)
-                E_xx_arr[i, j] = E_xx(0, 0, point)
-                E_r_arr[i, j] = E_r(0, 0, point)
-                E_r_arr[i, j] = E_r(0, 0, point)
-                E_r_arr[i, j] = E_r(0, 0, point)
-                p_arr[i, j] = p(0, 0, point)
+def run_small():
+    import create_mesh
 
-    t = np.load(Path(resultsdir) / "t.npy")
-    gamma = np.load(Path(resultsdir) / "gamma.npy")
+    datadir = "data_small"
+    create_mesh.main(datadir=datadir, char_length=1.0)
+    run(datadir=datadir, resultsdir="results_small", overwrite=True, spring=10.0)
+    print("Done")
+    postprocess.postprocess_basic(resultsdir="results_small", datadir=datadir)
 
-    fig, ax = plt.subplots(3, 2, sharex=True, figsize=(10, 8))
 
-    lines = []
-    labels = []
-    for j, point in enumerate(points):
-        ax[0, 0].plot(t, sigma_xx_arr[:, j], color=cm.tab20(point))
-        ax[1, 0].plot(t, sigma_r_arr[:, j], color=cm.tab20(point))
-        ax[2, 0].plot(t, p_arr[:, j], color=cm.tab20(point))
-        ax[0, 1].plot(t, E_xx_arr[:, j], color=cm.tab20(point))
-        (l,) = ax[1, 1].plot(t, E_r_arr[:, j], color=cm.tab20(point))
-        lines.append(l)
-        labels.append(f"$r = {point:.1f}$")
-
-    ax[0, 0].set_title(r"$\sigma_{xx}$")
-    ax[1, 0].set_title(r"$\sigma_{r}$")
-    ax[2, 0].set_title("$p$")
-    ax[0, 1].set_title(r"$E_{xx}$")
-    ax[1, 1].set_title(r"$E_{r}$")
-    ax[2, 1].plot(t, gamma)
-    ax[2, 1].set_title(r"$\gamma$")
-    fig.subplots_adjust(right=0.87)
-    fig.legend(lines, labels, loc="center right")
-    fig.savefig(Path(figdir) / "results.png")
+def main():
+    # run_basic()
+    effect_of_spring()
+    run_varing_gamma()
+    # run_small()
 
 
 if __name__ == "__main__":
     main()
-    postprocess()

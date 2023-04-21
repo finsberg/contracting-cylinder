@@ -1,13 +1,14 @@
+from pathlib import Path
+
 import gmsh
 import numpy as np
 
 
-def main():
+def main(datadir="data", char_length=0.2, L=5, r=1):
+    Path(datadir).mkdir(exist_ok=True, parents=True)
     gmsh.initialize()
     gmsh.model.add("Cell")
-    char_length = 0.2
-    L = 5
-    r = 1
+
     cylinder = gmsh.model.occ.addCylinder(-L / 2, 0.0, 0.0, L, 0, 0, r)
     gmsh.model.occ.synchronize()
 
@@ -41,7 +42,7 @@ def main():
 
     gmsh.model.mesh.generate(3)
     gmsh.model.mesh.optimize("Netgen")
-    gmsh.write("cell.msh")
+    gmsh.write((Path(datadir) / "cell.msh").as_posix())
     gmsh.finalize()
 
 
