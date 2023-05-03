@@ -47,4 +47,5 @@ def main(datadir="data", char_length=0.2, L=5, r=1):
 
 
 if __name__ == "__main__":
-    main()
+    # main()
+    main(datadir="data_small_radius", L=5, r=0.5)

@@ -228,6 +228,17 @@ def run_basic():
     postprocess.postprocess_basic()
 
 
+def run_basic_smaller_raidius():
+    # run(
+    #     datadir="data_small_radius", resultsdir="results_smaller_radius", overwrite=True
+    # )
+    postprocess.postprocess_basic(
+        datadir="data_small_radius",
+        resultsdir="results_smaller_radius",
+        figdir="figures_smaller_radius",
+    )
+
+
 def run_varing_gamma():
     run(resultsdir="results_varying_gamma", varying_gamma=True, overwrite=True)
     postprocess.postprocess_basic(
@@ -256,9 +267,10 @@ def run_small():
 
 def main():
     # run_basic()
-    effect_of_spring()
-    run_varing_gamma()
+    # effect_of_spring()
+    # run_varing_gamma()
     # run_small()
+    run_basic_smaller_raidius()
 
 
 if __name__ == "__main__":

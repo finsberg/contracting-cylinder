@@ -63,7 +63,7 @@ def postprocess_basic(resultsdir="results", datadir="data", figdir="figures"):
     with h5py.File(output.with_suffix(".h5"), "r") as f:
         N = len(f["u"].keys())
 
-    points = np.arange(0, 1.1, 0.1)
+    points = np.arange(0, geo.mesh.coordinates().max(0)[2] + 0.1, 0.1)
 
     sigma_xx_arr = np.zeros((N, len(points)))
     sigma_r_arr = np.zeros((N, len(points)))
@@ -116,15 +116,15 @@ def postprocess_basic(resultsdir="results", datadir="data", figdir="figures"):
     lines = []
     labels = []
     for j, point in enumerate(points):
-        ax[0, 0].plot(t, sigma_xx_arr[:, j], color=cm.tab20(point))
-        ax[1, 0].plot(t, sigma_r_arr[:, j], color=cm.tab20(point))
-        ax[2, 0].plot(t, sigma_c_arr[:, j], color=cm.tab20(point))
+        ax[0, 0].plot(t, sigma_xx_arr[:, j], color=cm.tab20(point / max(points)))
+        ax[1, 0].plot(t, sigma_r_arr[:, j], color=cm.tab20(point / max(points)))
+        ax[2, 0].plot(t, sigma_c_arr[:, j], color=cm.tab20(point / max(points)))
 
-        ax[0, 1].plot(t, E_xx_arr[:, j], color=cm.tab20(point))
-        ax[1, 1].plot(t, E_r_arr[:, j], color=cm.tab20(point))
-        ax[2, 1].plot(t, E_c_arr[:, j], color=cm.tab20(point))
+        ax[0, 1].plot(t, E_xx_arr[:, j], color=cm.tab20(point / max(points)))
+        ax[1, 1].plot(t, E_r_arr[:, j], color=cm.tab20(point / max(points)))
+        ax[2, 1].plot(t, E_c_arr[:, j], color=cm.tab20(point / max(points)))
 
-        (l,) = ax[0, 2].plot(t, p_arr[:, j], color=cm.tab20(point))
+        (l,) = ax[0, 2].plot(t, p_arr[:, j], color=cm.tab20(point / max(points)))
         lines.append(l)
         labels.append(f"$r = {point:.1f}$")
 
