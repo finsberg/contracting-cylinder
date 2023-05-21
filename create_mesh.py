@@ -4,7 +4,7 @@ import gmsh
 import numpy as np
 
 
-def main(datadir="data", char_length=0.2, L=5, r=1):
+def main(datadir="data", char_length=100.0, L=2000, r=400):
     Path(datadir).mkdir(exist_ok=True, parents=True)
     gmsh.initialize()
     gmsh.model.add("Cell")
@@ -48,4 +48,4 @@ def main(datadir="data", char_length=0.2, L=5, r=1):
 
 if __name__ == "__main__":
     # main()
-    main(datadir="data_small_radius", L=5, r=0.5)
+    main(datadir="data_basic")
