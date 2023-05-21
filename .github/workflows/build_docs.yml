@@ -38,7 +38,7 @@ jobs:
         run: npm install -g myst-cli
 
       - name: Install latexmk
-        run: apt-get install latexmk
+        run: sudo apt-get update && sudo apt-get install latexmk
 
       - name: Build pdf
         run: cd report && myst build --pdf
