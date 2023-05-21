@@ -37,6 +37,9 @@ jobs:
       - name: Install myst-cli
         run: npm install -g myst-cli
 
+      - name: Install latexmk
+        run: apt-get install latexmk
+
       - name: Build pdf
         run: cd report && myst build --pdf
 
