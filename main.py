@@ -32,7 +32,7 @@ def ca_transient(t, tstart=0.05, ca_ampl=0.3):
 def run(
     resultsdir="results",
     datadir="data",
-    spring=1.0,
+    spring=0.1,
     overwrite: bool = False,
     varying_gamma: bool = False,
 ):
@@ -69,9 +69,9 @@ def run(
         activation = gamma
 
     matparams = {
-        "a": 2.280,
+        "a": 2280,
         "b": 9.726,
-        "a_f": 1.685,
+        "a_f": 1685,
         "b_f": 15.779,
         "a_s": 0.0,
         "b_s": 0.0,
@@ -224,8 +224,10 @@ def run(
 
 
 def run_basic():
-    run(overwrite=True)
-    postprocess.postprocess_basic()
+    run(resultsdir="results/basic", datadir="data_basic", overwrite=True)
+    postprocess.postprocess_basic(
+        resultsdir="results/basic", datadir="data_basic", figdir="figures_new/basic"
+    )
 
 
 def run_basic_smaller_raidius():
@@ -247,11 +249,11 @@ def run_varing_gamma():
 
 
 def effect_of_spring():
-    springs = [0.5, 1.0, 5.0, 10.0]
-    resultdirs = {spring: f"results_spring{spring}" for spring in springs}
+    springs = [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
+    resultdirs = {spring: f"results/spring{spring}" for spring in springs}
     for spring in springs:
         print("Spring : ", spring)
-        run(resultsdir=resultdirs[spring], spring=spring)
+        run(resultsdir=resultdirs[spring], spring=spring, datadir="data_basic")
     postprocess.postprocess_effect_of_spring(resultdirs=resultdirs)
 
 
@@ -266,11 +268,11 @@ def run_small():
 
 
 def main():
-    # run_basic()
+    run_basic()
     # effect_of_spring()
     # run_varing_gamma()
     # run_small()
-    run_basic_smaller_raidius()
+    # run_basic_smaller_raidius()
 
 
 if __name__ == "__main__":
