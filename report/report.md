@@ -1,7 +1,7 @@
 ---
-title: Contracting cylinder
+title: Methods
 description: Simple example of a contracting cylinder in FEniCS
-keywords: []
+keywords: ["cardiac mechancis", "elasticity", "stress"]
 date: 2023-05-21
 license: CC-BY-4.0
 authors: 
@@ -17,11 +17,6 @@ exports:
     template: curvenote
     output: report.tex
 ---
-# Introduction
-We would like to implement a simple contracting cylinder
-
-# Methods
-
 ## Domain
 
 We consider a cylindrical domain $\Omega(r, a) = \omega(r) \times [-a, a]$ with 
