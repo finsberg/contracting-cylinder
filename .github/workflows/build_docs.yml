@@ -17,7 +17,7 @@ concurrency:
 
 env:
   # Directory that will be published on github pages
-  PUBLISH_DIR: ./report/_build/html
+  PUBLISH_DIR: ./_build/html
   BASE_URL: /${{ github.event.repository.name }}
 
 jobs:
@@ -41,11 +41,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install latexmk texlive-xetex -y
 
       - name: Build pdf
-        run: cd report && myst build --pdf
+        run: myst build --pdf
 
 
       - name: Build static html
-        run: cd report && myst build --html
+        run: myst build --html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v1

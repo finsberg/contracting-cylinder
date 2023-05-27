@@ -1,3 +1,0 @@
-# Contracting cylinder
-
-TBW

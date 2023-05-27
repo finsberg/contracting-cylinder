@@ -1,5 +1,0 @@
-format: jb-book
-root: README
-chapters:
-  - file: "install.md"
-  - file: "report.md"
