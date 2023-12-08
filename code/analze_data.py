@@ -4,8 +4,19 @@ import mps_motion
 import mps
 
 
+def plot_selection(frame, x0, x1, y0, y1, fname):
+    fig, ax = plt.subplots()
+    ax.imshow(frame.T)
+    ax.plot([x0, x0], [y0, y1], color="r")
+    ax.plot([x1, x1], [y0, y1], color="r")
+    ax.plot([x0, x1], [y0, y0], color="r")
+    ax.plot([x0, x1], [y1, y1], color="r")
+    fig.savefig(fname)
+
+
 def windowed_mps_data(
     mps_data: mps.MPS,
+    fname: str,
     analysis_window_start: float = 0,
     analysis_window_end: float = -1,
     startX: int = 0,
@@ -46,6 +57,11 @@ def windowed_mps_data(
         raise ValueError(
             f"Cannot create a empty frame sequence. starty = {startY}, but {frames.shape =}",
         )
+
+    plot_selection(
+        frame=frames[:, :, 0], x0=startX, x1=endX, y0=startY, y1=endY, fname=fname
+    )
+
     return mps_motion.utils.MPSData(
         frames=frames[startX:endX, startY:endY, start_index:end_index],
         time_stamps=time_stamps[start_index:end_index],
@@ -150,21 +166,42 @@ def main(outdir="motion_results"):
 
     name = "B1"
     data = mps.MPS(data_folder / f"{name}.avi")
-    analze_motion(data, "", outdir / name, name)
-    selection = windowed_mps_data(data, startX=280, endX=560, startY=750, endY=1500)
-    analze_motion(selection, "_selection", outdir / name, name)
+    # analze_motion(data, "", outdir / name, name)
+    selection = windowed_mps_data(
+        data,
+        startX=280,
+        endX=560,
+        startY=750,
+        endY=1500,
+        fname=outdir / name / "selected_region.png",
+    )
+    # analze_motion(selection, "_selection", outdir / name, name)
 
     name = "B5"
     data = mps.MPS(data_folder / f"{name}.avi")
-    analze_motion(data, "", outdir / name, name)
-    selection = windowed_mps_data(data, startX=350, endX=700, startY=750, endY=1500)
-    analze_motion(selection, "_selection", outdir / name, name)
+    # analze_motion(data, "", outdir / name, name)
+    selection = windowed_mps_data(
+        data,
+        startX=350,
+        endX=700,
+        startY=750,
+        endY=1500,
+        fname=outdir / name / "selected_region.png",
+    )
+    # analze_motion(selection, "_selection", outdir / name, name)
 
     name = "C5"
     data = mps.MPS(data_folder / f"{name}.avi")
-    analze_motion(data, "", outdir / name, name)
-    selection = windowed_mps_data(data, startX=280, endX=560, startY=750, endY=1500)
-    analze_motion(selection, "_selection", outdir / name, name)
+    # analze_motion(data, "", outdir / name, name)
+    selection = windowed_mps_data(
+        data,
+        startX=280,
+        endX=560,
+        startY=750,
+        endY=1500,
+        fname=outdir / name / "selected_region.png",
+    )
+    # analze_motion(selection, "_selection", outdir / name, name)
 
 
 if __name__ == "__main__":

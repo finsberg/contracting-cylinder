@@ -1,6 +1,8 @@
 from pathlib import Path
 import dolfin
 
+
+import ufl_legacy as ufl
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm
@@ -17,6 +19,7 @@ class CylinderSlice(dolfin.UserExpression):
     def eval(self, value, x):
         dx = 0.05
         values = [self.f(0, x[0], x[1])]
+
         if not np.isclose(x[0], 1, atol=dx):
             values.append(self.f(0, x[0] + dx, x[1]))
         if not np.isclose(x[1], 1, atol=dx):
@@ -36,9 +39,9 @@ def postprocess_basic(resultsdir="results", datadir="data", figdir="figures"):
     geo = load_geometry(msh_file=Path(datadir) / "cell.msh")
 
     disk = dolfin.UnitDiscMesh.create(dolfin.MPI.comm_world, 30, 1, 2)
-    V_disk = dolfin.FunctionSpace(disk, "CG", 2)
+    V_disk = dolfin.FunctionSpace(disk, "CG", 1)
 
-    V_DG1 = dolfin.FunctionSpace(geo.mesh, "DG", 2)
+    V_DG1 = dolfin.FunctionSpace(geo.mesh, "DG", 1)
     V_CG1 = dolfin.FunctionSpace(geo.mesh, "CG", 1)
 
     sigma_xx = dolfin.Function(V_DG1)
@@ -151,6 +154,7 @@ def postprocess_effect_of_spring(
     geo = load_geometry(msh_file=Path(datadir) / "cell.msh")
 
     disk = dolfin.UnitDiscMesh.create(dolfin.MPI.comm_world, 30, 1, 2)
+
     V_disk = dolfin.FunctionSpace(disk, "CG", 2)
 
     V_DG1 = dolfin.FunctionSpace(geo.mesh, "DG", 2)
@@ -271,3 +275,280 @@ def postprocess_effect_of_spring(
     fig_sigma.savefig(Path(figdir) / "results_spring_sigma.png")
     fig_E.savefig(Path(figdir) / "results_spring_E.png")
     fig_p.savefig(Path(figdir) / "results_spring_p.png")
+
+
+def name2latex(name: str) -> str:
+    name_lst = name.split("_")
+    if len(name_lst) == 1:
+        return f"${name}$"
+
+    *sym, sup = name_lst
+    if len(sym) == 1:
+        sym = sym[0]
+        if sym == "sigma":
+            sym = "\\sigma"
+        return f"${sym}_{{{sup}}}$"
+    else:
+        if sym[0] == "sigma":
+            sym = "\\mathrm{dev} \\sigma"
+        else:
+            raise ValueError(sym)
+        return f"${sym}_{{{sup}}}$"
+
+
+def postprocess_effect_of_compressibility_stress(
+    resultdirs, datadir="data_basic", figdir="figures_comp", plot_slice=True
+):
+    geo = load_geometry(msh_file=Path(datadir) / "cell.msh")
+    figdir = Path(figdir)
+    figdir.mkdir(exist_ok=True)
+    disk = dolfin.UnitDiscMesh.create(dolfin.MPI.comm_world, 30, 1, 2)
+    R = geo.mesh.coordinates().max(0)[-1]
+    disk.coordinates()[:] *= R
+    V_disk = dolfin.FunctionSpace(disk, "CG", 2)
+
+    V_DG1 = dolfin.FunctionSpace(geo.mesh, "DG", 1)
+    V_CG1 = dolfin.FunctionSpace(geo.mesh, "CG", 1)
+
+    funcs = {
+        name: dolfin.Function(V_DG1)
+        for name in [
+            "sigma_xx",
+            "sigma_r",
+            "sigma_c",
+            "sigma_dev_xx",
+            "sigma_dev_r",
+            "sigma_dev_c",
+            "E_xx",
+            "E_r",
+            "E_c",
+        ]
+    }
+    funcs["p"] = dolfin.Function(V_CG1)
+
+    for v in funcs.values():
+        v.set_allow_extrapolation(True)
+
+    num_dirs = len(resultdirs)
+    fst = next(iter(resultdirs.values()))
+    t = np.load(Path(fst) / "t.npy")
+    gamma = np.load(Path(fst) / "gamma.npy")
+    N = len(t)
+
+    points = np.linspace(0, R, 11)
+    arrs = {name: np.zeros((num_dirs, N, len(points))) for name in funcs}
+    shortening = np.zeros((num_dirs, N))
+    meshvol = dolfin.assemble(dolfin.Constant(1) * dolfin.dx(geo.mesh))
+
+    for idx, (kappa, resultdir) in enumerate(resultdirs.items()):
+        output = Path(resultdir) / "results.xdmf"
+        print(output)
+
+        with dolfin.XDMFFile(output.as_posix()) as f:
+            for i in range(N):
+                for name, func in funcs.items():
+                    print(name)
+                    if name == "p" and kappa is not None:
+                        continue
+
+                    f.read_checkpoint(func, name, i)
+
+                    if name == "E_xx":
+                        shortening[idx, i] = (
+                            dolfin.assemble(funcs["E_xx"] * dolfin.dx) / meshvol
+                        )
+
+                for j, point in enumerate(points):
+                    for name, func in funcs.items():
+                        arrs[name][idx, i, j] = func(0, 0, point)
+
+                if i == gamma.argmax() and plot_slice:
+                    for name, func in funcs.items():
+                        if name == "p" and kappa is not None:
+                            continue
+                        extra = (
+                            " (incomp)"
+                            if kappa is None
+                            else f" ($\\kappa={kappa:.0f}$)"
+                        )
+                        title = name2latex(name) + extra
+
+                        plt.colorbar(
+                            dolfin.plot(dolfin.interpolate(CylinderSlice(func), V_disk))
+                        )
+                        plt.title(title)
+                        plt.savefig(figdir / f"{name}_{kappa}.png")
+                        plt.close()
+
+    fig, ax = plt.subplots()
+    for idx, kappa in enumerate(resultdirs.keys()):
+        title = "incomp" if kappa is None else rf"$\kappa = {kappa:.0f}$"
+        ax.plot(t, shortening[idx, :], label=title)
+    ax.legend()
+    ax.set_xlabel("time")
+    ax.set_ylabel("shortening")
+    fig.savefig(figdir / "results_comp_shortening.png")
+
+    fig_sigma, ax_sigma = plt.subplots(
+        3, num_dirs, sharex=True, sharey="row", figsize=(10, 8)
+    )
+    fig_sigma_dev, ax_sigma_dev = plt.subplots(
+        3, num_dirs, sharex=True, sharey="row", figsize=(10, 8)
+    )
+    fig_E, ax_E = plt.subplots(3, num_dirs, sharex=True, sharey="row", figsize=(10, 8))
+    fig_p, ax_p = plt.subplots()
+
+    for idx, kappa in enumerate(resultdirs.keys()):
+        title = "incomp" if kappa is None else rf"$\kappa = {kappa:.0f}$"
+        ax_sigma[0, idx].set_title(title)
+        ax_E[0, idx].set_title(title)
+
+        lines = []
+        labels = []
+        for j, point in enumerate(points):
+            for i, name in enumerate(["sigma_xx", "sigma_r", "sigma_c"]):
+                (l,) = ax_sigma[i, idx].plot(
+                    t, arrs[name][idx, :, j], color=cm.tab20(point / R)
+                )
+            for i, name in enumerate(["sigma_dev_xx", "sigma_dev_r", "sigma_dev_c"]):
+                ax_sigma_dev[i, idx].plot(
+                    t, arrs[name][idx, :, j], color=cm.tab20(point / R)
+                )
+            for i, name in enumerate(["E_xx", "E_r", "E_c"]):
+                ax_E[i, idx].plot(t, arrs[name][idx, :, j], color=cm.tab20(point / R))
+
+            if kappa is None:
+                ax_p.set_title(title)
+                ax_p.plot(t, arrs["p"][idx, :, j], color=cm.tab20(point / R))
+
+            lines.append(l)
+            labels.append(f"$r = {point:.1f}$")
+
+    for i, label in enumerate([r"$\sigma_{xx}$", r"$\sigma_{r}$", r"$\sigma_{c}$"]):
+        ax_sigma[i, 0].set_ylabel(label)
+
+    for i, label in enumerate(
+        [
+            r"$\mathrm{dev}\sigma_{xx}$",
+            r"$\mathrm{dev}\sigma_{r}$",
+            r"$\mathrm{dev}\sigma_{c}$",
+        ]
+    ):
+        ax_sigma_dev[i, 0].set_ylabel(label)
+
+    for i, label in enumerate([r"$E_{xx}$", r"$E_{r}$", r"$E_{c}$"]):
+        ax_E[i, 0].set_ylabel(label)
+
+    ax_p2 = ax_p.set_ylabel("$p$")
+
+    for fig in [fig_E, fig_sigma, fig_sigma_dev]:
+        fig.subplots_adjust(right=0.87)
+        fig.legend(lines, labels, loc="center right")
+    fig_sigma.savefig(Path(figdir) / "results_comp_sigma.png")
+    fig_sigma.savefig(Path(figdir) / "results_comp_sigma_dev.png")
+    fig_E.savefig(Path(figdir) / "results_comp_E.png")
+    fig_p.savefig(Path(figdir) / "results_comp_p.png")
+
+
+def postprocess_effect_of_compressibility_disp(
+    resultdirs, datadir="data_basic", figdir="figures_comp", plot_slice=True
+):
+    geo = load_geometry(msh_file=Path(datadir) / "cell.msh")
+    figdir = Path(figdir)
+    figdir.mkdir(exist_ok=True)
+    disk = dolfin.UnitDiscMesh.create(dolfin.MPI.comm_world, 30, 1, 2)
+    R = geo.mesh.coordinates().max(0)[-1]
+    disk.coordinates()[:] *= R
+    V_disk = dolfin.FunctionSpace(disk, "CG", 2)
+
+    V_CG2 = dolfin.VectorFunctionSpace(geo.mesh, "CG", 2)
+    u = dolfin.Function(V_CG2)
+    u.set_allow_extrapolation(True)
+
+    num_dirs = len(resultdirs)
+    fst = next(iter(resultdirs.values()))
+    t = np.load(Path(fst) / "t.npy")
+    gamma = np.load(Path(fst) / "gamma.npy")
+    N = len(t)
+
+    points = np.linspace(0, R, 11)
+    arr = np.zeros((num_dirs, N, len(points), 3))
+    vols = np.zeros((num_dirs, N))
+    mesh_vol = dolfin.assemble(dolfin.Constant(1) * dolfin.dx(geo.mesh))
+
+    for idx, (kappa, resultdir) in enumerate(resultdirs.items()):
+        output = Path(resultdir) / "results.xdmf"
+        print(output)
+
+        with dolfin.XDMFFile(output.as_posix()) as f:
+            for i in range(N):
+                f.read_checkpoint(u, "u", i)
+
+                vols[idx, i] = (
+                    dolfin.assemble(ufl.det(ufl.grad(u) + ufl.Identity(3)) * dolfin.dx)
+                    / mesh_vol
+                )
+
+                for j, point in enumerate(points):
+                    arr[idx, i, j, :] = u(0, 0, point)
+
+                # if i == gamma.argmax() and plot_slice:
+                #     for name, func in funcs.items():
+                #         if name == "p" and kappa is not None:
+                #             continue
+                #         extra = (
+                #             " (incomp)"
+                #             if kappa is None
+                #             else f" ($\\kappa={kappa:.0f}$)"
+                #         )
+                #         title = name2latex(name) + extra
+
+                #         plt.colorbar(
+                #             dolfin.plot(dolfin.interpolate(CylinderSlice(func), V_disk))
+                #         )
+                #         plt.title(title)
+                #         plt.savefig(figdir / f"{name}_{kappa}.png")
+                #         plt.close()
+
+    fig, ax = plt.subplots(1, 3, figsize=(10, 8))
+    fig_r, ax_r = plt.subplots(figsize=(10, 8))
+    lines = []
+    labels = []
+    for idx, kappa in enumerate(resultdirs.keys()):
+        title = "incomp" if kappa is None else rf"$\kappa = {kappa:.0f}$"
+        labels.append(title)
+        for i in range(3):
+            (l,) = ax[i].plot(t, arr[idx, :, -1, i])
+        y = arr[idx, :, -1, 1]
+        z = arr[idx, :, -1, 2]
+        dr = np.sqrt(y**2 + z**2)
+
+        ax_r.plot(t, (R + dr) / R, label=title)
+        lines.append(l)
+    lgd = fig.legend(lines, labels, loc="center right")
+    fig.subplots_adjust(right=0.87)
+    ax_r.legend()
+    ax_r.set_xlabel("time")
+    ax_r.set_ylabel("radius change")
+
+    for axi in ax:
+        axi.set_xlabel("time")
+    ax[0].set_ylabel("displacement")
+    ax[0].set_title("$x$")
+    ax[1].set_title("$y$")
+    ax[2].set_title("$z$")
+    fig_r.savefig(figdir / "results_comp_radius.png")
+    fig.savefig(
+        figdir / "results_comp_xyz.png",
+        bbox_extra_artists=(lgd,),
+        bbox_inches="tight",
+    )
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    for idx, kappa in enumerate(resultdirs.keys()):
+        title = "incomp" if kappa is None else rf"$\kappa = {kappa:.0f}$"
+        ax.plot(t, vols[idx, :], label=title)
+    ax.legend()
+    ax.set_xlabel("time")
+    ax.set_ylabel("volume change")
+    fig.savefig(figdir / "results_comp_volume.png")

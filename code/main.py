@@ -2,11 +2,65 @@ from pathlib import Path
 import dolfin
 import pulse
 import numpy as np
+import ufl_legacy as ufl
 
 
 from geometry import load_geometry
 from utils import Projector
 import postprocess
+
+
+class CompressibleProblem(pulse.MechanicsProblem):
+    """
+    This class implements a compressbile model with a penalized
+    compressibility term, solving for the displacement only.
+
+    """
+
+    def __init__(self, *args, kappa=1e3, **kwargs):
+        self.kappa = dolfin.Constant(kappa)
+        super().__init__(*args, *kwargs)
+
+    def _init_spaces(self):
+        mesh = self.geometry.mesh
+
+        element = dolfin.VectorElement("P", mesh.ufl_cell(), 2)
+        self.state_space = dolfin.FunctionSpace(mesh, element)
+        self.state = dolfin.Function(self.state_space)
+        self.state_test = dolfin.TestFunction(self.state_space)
+
+        # Add penalty factor
+
+    def _init_forms(self):
+        u = self.state
+        v = self.state_test
+
+        F = dolfin.variable(pulse.kinematics.DeformationGradient(u))
+        J = pulse.kinematics.Jacobian(F)
+
+        dx = self.geometry.dx
+
+        # Add penalty term
+        internal_energy = self.material.strain_energy(F) + self.kappa * (
+            J * dolfin.ln(J) - J + 1
+        )
+
+        self._virtual_work = dolfin.derivative(
+            internal_energy * dx,
+            self.state,
+            self.state_test,
+        )
+
+        self._virtual_work += self._external_work(u, v)
+
+        self._jacobian = dolfin.derivative(
+            self._virtual_work,
+            self.state,
+            dolfin.TrialFunction(self.state_space),
+        )
+
+        self._set_dirichlet_bc()
+        self._init_solver()
 
 
 def ca_transient(t, tstart=0.05, ca_ampl=0.3):
@@ -35,6 +89,7 @@ def run(
     spring=0.1,
     overwrite: bool = False,
     varying_gamma: bool = False,
+    kappa: float | None = None,
 ):
     pulse.set_log_level(10)
     Path(resultsdir).mkdir(exist_ok=True, parents=True)
@@ -68,10 +123,12 @@ def run(
     else:
         activation = gamma
 
+    m2mm = 1000.0
+
     matparams = {
-        "a": 2280,
+        "a": 2280 / m2mm,
         "b": 9.726,
-        "a_f": 1685,
+        "a_f": 1685 / m2mm,
         "b_f": 15.779,
         "a_s": 0.0,
         "b_s": 0.0,
@@ -109,11 +166,14 @@ def run(
     ]
     bcs = pulse.BoundaryConditions(dirichlet=[lambda x: []], neumann=[], robin=robin_bc)
 
-    problem = pulse.MechanicsProblem(geometry, material, bcs)
+    if kappa is None:
+        problem = pulse.MechanicsProblem(geometry, material, bcs)
+    else:
+        problem = CompressibleProblem(geometry, material, bcs, kappa=kappa)
 
     W_DG1 = dolfin.VectorFunctionSpace(geometry.mesh, "DG", 1)
-    rad = dolfin.Function(W_DG1)
-    rad.interpolate(
+    rad0 = dolfin.Function(W_DG1)
+    rad0.interpolate(
         dolfin.Expression(
             (
                 "0",
@@ -123,8 +183,8 @@ def run(
             degree=1,
         )
     )
-    circ = dolfin.Function(W_DG1)
-    circ.interpolate(
+    circ0 = dolfin.Function(W_DG1)
+    circ0.interpolate(
         dolfin.Expression(
             (
                 "0",
@@ -134,12 +194,19 @@ def run(
             degree=1,
         )
     )
+    long0 = dolfin.Function(W_DG1)
+    long0.interpolate(dolfin.Expression(("1", "0", "0"), degree=1))
 
-    V_DG1 = dolfin.FunctionSpace(geometry.mesh, "DG", 2)
+    V_DG1 = dolfin.FunctionSpace(geometry.mesh, "DG", 1)
     proj = Projector(V_DG1)
     sigma_xx = dolfin.Function(V_DG1)
     sigma_r = dolfin.Function(V_DG1)
     sigma_c = dolfin.Function(V_DG1)
+
+    sigma_dev_xx = dolfin.Function(V_DG1)
+    sigma_dev_r = dolfin.Function(V_DG1)
+    sigma_dev_c = dolfin.Function(V_DG1)
+
     E_xx = dolfin.Function(V_DG1)
     E_r = dolfin.Function(V_DG1)
     E_c = dolfin.Function(V_DG1)
@@ -152,18 +219,33 @@ def run(
 
     for i, (ti, g) in enumerate(zip(t, amp)):
         pulse.iterate.iterate(problem, gamma, g, initial_number_of_steps=20)
-        u, p = problem.state.split()
-        F = pulse.kinematics.DeformationGradient(u)
-        sigma = material.CauchyStress(F, p)
-        E = pulse.kinematics.GreenLagrangeStrain(F)
 
-        proj.project(sigma_xx, sigma[0, 0])
+        if kappa is None:
+            u, p = problem.state.split()
+        else:
+            u = problem.state
+            p = None
+
+        F = pulse.kinematics.DeformationGradient(u)
+        J = ufl.det(F)
+        sigma = material.CauchyStress(F, p)
+        sigma_dev = sigma - (1 / 3) * ufl.tr(sigma) * ufl.Identity(3)
+        E = pulse.kinematics.GreenLagrangeStrain(F)
+        rad = F * rad0 / J
+        circ = F * circ0 / J
+        long = F * long0 / J
+
+        proj.project(sigma_xx, dolfin.inner(long, sigma * long))
         proj.project(sigma_r, dolfin.inner(rad, sigma * rad))
         proj.project(sigma_c, dolfin.inner(circ, sigma * circ))
-        proj.project(E_xx, E[0, 0])
-        proj.project(E_r, dolfin.inner(rad, E * rad))
-        proj.project(E_c, dolfin.inner(circ, E * circ))
 
+        proj.project(sigma_dev_xx, dolfin.inner(long, sigma_dev * long))
+        proj.project(sigma_dev_r, dolfin.inner(rad, sigma_dev * rad))
+        proj.project(sigma_dev_c, dolfin.inner(circ, sigma_dev * circ))
+
+        proj.project(E_xx, dolfin.inner(long0, E * long0))
+        proj.project(E_r, dolfin.inner(rad0, E * rad0))
+        proj.project(E_c, dolfin.inner(circ0, E * circ0))
         with dolfin.XDMFFile(output.as_posix()) as f:
             f.write_checkpoint(
                 u,
@@ -172,13 +254,14 @@ def run(
                 encoding=dolfin.XDMFFile.Encoding.HDF5,
                 append=True,
             )
-            f.write_checkpoint(
-                p,
-                function_name="p",
-                time_step=ti,
-                encoding=dolfin.XDMFFile.Encoding.HDF5,
-                append=True,
-            )
+            if p is not None:
+                f.write_checkpoint(
+                    p,
+                    function_name="p",
+                    time_step=ti,
+                    encoding=dolfin.XDMFFile.Encoding.HDF5,
+                    append=True,
+                )
             f.write_checkpoint(
                 sigma_xx,
                 function_name="sigma_xx",
@@ -196,6 +279,27 @@ def run(
             f.write_checkpoint(
                 sigma_c,
                 function_name="sigma_c",
+                time_step=ti,
+                encoding=dolfin.XDMFFile.Encoding.HDF5,
+                append=True,
+            )
+            f.write_checkpoint(
+                sigma_dev_xx,
+                function_name="sigma_dev_xx",
+                time_step=ti,
+                encoding=dolfin.XDMFFile.Encoding.HDF5,
+                append=True,
+            )
+            f.write_checkpoint(
+                sigma_dev_r,
+                function_name="sigma_dev_r",
+                time_step=ti,
+                encoding=dolfin.XDMFFile.Encoding.HDF5,
+                append=True,
+            )
+            f.write_checkpoint(
+                sigma_dev_c,
+                function_name="sigma_dev_c",
                 time_step=ti,
                 encoding=dolfin.XDMFFile.Encoding.HDF5,
                 append=True,
@@ -267,8 +371,25 @@ def run_small():
     postprocess.postprocess_basic(resultsdir="results_small", datadir=datadir)
 
 
+def run_compressiblity():
+    kappas = [None, 1, 10, 1e2, 1e3, 1e4, 1e5]
+    resultdirs = {kappa: f"results/kappa{kappa}" for kappa in kappas}
+    # for kappa in kappas:
+    #     run(
+    #         resultsdir=resultdirs[kappa],
+    #         overwrite=True,
+    #         datadir="data_basic",
+    #         kappa=kappa,
+    #     )
+    # print("Done")
+    # exit()
+    postprocess.postprocess_effect_of_compressibility_stress(resultdirs=resultdirs)
+    postprocess.postprocess_effect_of_compressibility_disp(resultdirs=resultdirs)
+
+
 def main():
-    run_basic()
+    run_compressiblity()
+    # run_basic()
     # effect_of_spring()
     # run_varing_gamma()
     # run_small()

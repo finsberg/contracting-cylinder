@@ -1,6 +1,6 @@
 """Stolen from https://github.com/ComputationalPhysiology/simcardems/blob/main/src/simcardems/utils.py"""
 import dolfin
-import ufl
+import ufl_legacy as ufl
 import numpy as np
 
 

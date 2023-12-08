@@ -3,3 +3,6 @@ numpy
 fenics-pulse
 matplotlib
 h5py
+--no-binary=h5py
+cardiac-geometies
+ldrb
