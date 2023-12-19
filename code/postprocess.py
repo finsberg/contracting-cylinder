@@ -296,16 +296,12 @@ def name2latex(name: str) -> str:
         return f"${sym}_{{{sup}}}$"
 
 
-def postprocess_effect_of_compressibility_stress(
-    resultdirs, datadir="data_basic", figdir="figures_comp", plot_slice=True
-):
-    geo = load_geometry(msh_file=Path(datadir) / "cell.msh")
-    figdir = Path(figdir)
-    figdir.mkdir(exist_ok=True)
+def create_arrays(resultdirs, gamma, points, figdir, plot_slice, geo, R):
     disk = dolfin.UnitDiscMesh.create(dolfin.MPI.comm_world, 30, 1, 2)
-    R = geo.mesh.coordinates().max(0)[-1]
     disk.coordinates()[:] *= R
     V_disk = dolfin.FunctionSpace(disk, "CG", 2)
+    num_dirs = len(resultdirs)
+    N = len(gamma)
 
     V_DG1 = dolfin.FunctionSpace(geo.mesh, "DG", 1)
     V_CG1 = dolfin.FunctionSpace(geo.mesh, "CG", 1)
@@ -329,15 +325,9 @@ def postprocess_effect_of_compressibility_stress(
     for v in funcs.values():
         v.set_allow_extrapolation(True)
 
-    num_dirs = len(resultdirs)
-    fst = next(iter(resultdirs.values()))
-    t = np.load(Path(fst) / "t.npy")
-    gamma = np.load(Path(fst) / "gamma.npy")
-    N = len(t)
-
-    points = np.linspace(0, R, 11)
     arrs = {name: np.zeros((num_dirs, N, len(points))) for name in funcs}
-    shortening = np.zeros((num_dirs, N))
+    arrs_avg = {name: np.zeros((num_dirs, N)) for name in funcs}
+
     meshvol = dolfin.assemble(dolfin.Constant(1) * dolfin.dx(geo.mesh))
 
     for idx, (kappa, resultdir) in enumerate(resultdirs.items()):
@@ -353,13 +343,9 @@ def postprocess_effect_of_compressibility_stress(
 
                     f.read_checkpoint(func, name, i)
 
-                    if name == "E_xx":
-                        shortening[idx, i] = (
-                            dolfin.assemble(funcs["E_xx"] * dolfin.dx) / meshvol
-                        )
-
-                for j, point in enumerate(points):
-                    for name, func in funcs.items():
+                for name, func in funcs.items():
+                    arrs_avg[name][idx, i] = dolfin.assemble(func * dolfin.dx) / meshvol
+                    for j, point in enumerate(points):
                         arrs[name][idx, i, j] = func(0, 0, point)
 
                 if i == gamma.argmax() and plot_slice:
@@ -380,14 +366,31 @@ def postprocess_effect_of_compressibility_stress(
                         plt.savefig(figdir / f"{name}_{kappa}.png")
                         plt.close()
 
-    fig, ax = plt.subplots()
-    for idx, kappa in enumerate(resultdirs.keys()):
-        title = "incomp" if kappa is None else rf"$\kappa = {kappa:.0f}$"
-        ax.plot(t, shortening[idx, :], label=title)
-    ax.legend()
-    ax.set_xlabel("time")
-    ax.set_ylabel("shortening")
-    fig.savefig(figdir / "results_comp_shortening.png")
+    np.save(figdir / "arrs.npy", {"arrs": arrs, "arrs_avg": arrs_avg})
+
+
+def postprocess_effect_of_compressibility_stress(
+    resultdirs, key2title, datadir="data_basic", figdir="figures_comp", plot_slice=True
+):
+    geo = load_geometry(msh_file=Path(datadir) / "cell.msh")
+    figdir = Path(figdir)
+    figdir.mkdir(exist_ok=True)
+
+    num_dirs = len(resultdirs)
+    fst = next(iter(resultdirs.values()))
+    t = np.load(Path(fst) / "t.npy")
+    gamma = np.load(Path(fst) / "gamma.npy")
+    N = len(t)
+    R = geo.mesh.coordinates().max(0)[-1]
+    points = np.linspace(0, R, 11)
+
+    arr_path = Path(figdir) / "arrs.npy"
+    if not arr_path.exists():
+        create_arrays(resultdirs, gamma, points, figdir, plot_slice, geo, R)
+
+    data_arrs = np.load(arr_path, allow_pickle=True).item()
+    arrs = data_arrs["arrs"]
+    arrs_avg = data_arrs["arrs_avg"]
 
     fig_sigma, ax_sigma = plt.subplots(
         3, num_dirs, sharex=True, sharey="row", figsize=(10, 8)
@@ -398,34 +401,65 @@ def postprocess_effect_of_compressibility_stress(
     fig_E, ax_E = plt.subplots(3, num_dirs, sharex=True, sharey="row", figsize=(10, 8))
     fig_p, ax_p = plt.subplots()
 
-    for idx, kappa in enumerate(resultdirs.keys()):
-        title = "incomp" if kappa is None else rf"$\kappa = {kappa:.0f}$"
+    fig_E_avg, ax_E_avg = plt.subplots(3, 1, sharex=True, sharey="row", figsize=(6, 8))
+    fig_p_avg, ax_p_avg = plt.subplots()
+
+    fig_sigma_avg, ax_sigma_avg = plt.subplots(
+        3, 1, sharex=True, sharey="row", figsize=(6, 8)
+    )
+    fig_sigma_dev_avg, ax_sigma_dev_avg = plt.subplots(
+        3, 1, sharex=True, sharey="row", figsize=(6, 8)
+    )
+
+    lines_avg = []
+    labels_avg = []
+    lines = []
+    labels = []
+    for idx, key in enumerate(resultdirs.keys()):
+        title = key2title(key)
+
         ax_sigma[0, idx].set_title(title)
         ax_E[0, idx].set_title(title)
 
-        lines = []
-        labels = []
-        for j, point in enumerate(points):
-            for i, name in enumerate(["sigma_xx", "sigma_r", "sigma_c"]):
-                (l,) = ax_sigma[i, idx].plot(
-                    t, arrs[name][idx, :, j], color=cm.tab20(point / R)
-                )
-            for i, name in enumerate(["sigma_dev_xx", "sigma_dev_r", "sigma_dev_c"]):
-                ax_sigma_dev[i, idx].plot(
-                    t, arrs[name][idx, :, j], color=cm.tab20(point / R)
-                )
-            for i, name in enumerate(["E_xx", "E_r", "E_c"]):
-                ax_E[i, idx].plot(t, arrs[name][idx, :, j], color=cm.tab20(point / R))
-
-            if kappa is None:
-                ax_p.set_title(title)
-                ax_p.plot(t, arrs["p"][idx, :, j], color=cm.tab20(point / R))
-
-            lines.append(l)
-            labels.append(f"$r = {point:.1f}$")
+        for k, (i, name, ax, ax_avg) in enumerate(
+            [
+                (0, "sigma_xx", ax_sigma, ax_sigma_avg),
+                (1, "sigma_r", ax_sigma, ax_sigma_avg),
+                (2, "sigma_c", ax_sigma, ax_sigma_avg),
+                (0, "sigma_dev_xx", ax_sigma_dev, ax_sigma_dev_avg),
+                (1, "sigma_dev_r", ax_sigma_dev, ax_sigma_dev_avg),
+                (2, "sigma_dev_c", ax_sigma_dev, ax_sigma_dev_avg),
+                (0, "E_xx", ax_E, ax_E_avg),
+                (1, "E_r", ax_E, ax_E_avg),
+                (2, "E_c", ax_E, ax_E_avg),
+                (0, "p", ax_p, ax_p_avg),
+            ]
+        ):
+            if name == "p":
+                axi_avg = ax_avg
+            else:
+                axi_avg = ax_avg[i]
+            (l1,) = axi_avg.plot(
+                t, arrs_avg[name][idx, :], color=cm.tab20(idx / len(resultdirs))
+            )
+            if k == 0:
+                lines_avg.append(l1)
+                labels_avg.append(title)
+            for j, point in enumerate(points):
+                if name == "p":
+                    if key is not None:
+                        continue
+                    axi = ax
+                else:
+                    axi = ax[i, idx]
+                (l,) = axi.plot(t, arrs[name][idx, :, j], color=cm.tab20(point / R))
+                if k == 0 and idx == 0:
+                    lines.append(l)
+                    labels.append(f"$r = {point:.1f}$")
 
     for i, label in enumerate([r"$\sigma_{xx}$", r"$\sigma_{r}$", r"$\sigma_{c}$"]):
         ax_sigma[i, 0].set_ylabel(label)
+        ax_sigma_avg[i].set_title(label)
 
     for i, label in enumerate(
         [
@@ -435,29 +469,45 @@ def postprocess_effect_of_compressibility_stress(
         ]
     ):
         ax_sigma_dev[i, 0].set_ylabel(label)
+        ax_sigma_dev_avg[i].set_title(label)
 
     for i, label in enumerate([r"$E_{xx}$", r"$E_{r}$", r"$E_{c}$"]):
         ax_E[i, 0].set_ylabel(label)
+        ax_E_avg[i].set_title(label)
 
     ax_p2 = ax_p.set_ylabel("$p$")
 
     for fig in [fig_E, fig_sigma, fig_sigma_dev]:
         fig.subplots_adjust(right=0.87)
         fig.legend(lines, labels, loc="center right")
+
+    for fig in [fig_E_avg, fig_sigma_avg, fig_sigma_dev_avg]:
+        fig.subplots_adjust(right=0.75)
+        fig.legend(lines_avg, labels_avg, loc="center right")
     fig_sigma.savefig(Path(figdir) / "results_comp_sigma.png")
-    fig_sigma.savefig(Path(figdir) / "results_comp_sigma_dev.png")
+    fig_sigma_dev.savefig(Path(figdir) / "results_comp_sigma_dev.png")
     fig_E.savefig(Path(figdir) / "results_comp_E.png")
     fig_p.savefig(Path(figdir) / "results_comp_p.png")
+    fig_sigma_avg.savefig(Path(figdir) / "results_comp_sigma_avg.png")
+    fig_sigma_dev_avg.savefig(Path(figdir) / "results_comp_sigma_dev_avg.png")
+    fig_E_avg.savefig(Path(figdir) / "results_comp_E_avg.png")
+    fig_p_avg.savefig(Path(figdir) / "results_comp_p_avg.png")
 
 
 def postprocess_effect_of_compressibility_disp(
-    resultdirs, datadir="data_basic", figdir="figures_comp", plot_slice=True
+    resultdirs,
+    key2title,
+    datadir="data_basic",
+    figdir="figures_comp",
+    plot_slice=True,
 ):
     geo = load_geometry(msh_file=Path(datadir) / "cell.msh")
     figdir = Path(figdir)
     figdir.mkdir(exist_ok=True)
     disk = dolfin.UnitDiscMesh.create(dolfin.MPI.comm_world, 30, 1, 2)
     R = geo.mesh.coordinates().max(0)[-1]
+    L = geo.mesh.coordinates().max(0)[0]
+
     disk.coordinates()[:] *= R
     V_disk = dolfin.FunctionSpace(disk, "CG", 2)
 
@@ -472,7 +522,8 @@ def postprocess_effect_of_compressibility_disp(
     N = len(t)
 
     points = np.linspace(0, R, 11)
-    arr = np.zeros((num_dirs, N, len(points), 3))
+    arr_center = np.zeros((num_dirs, N, 3))
+    arr_long = np.zeros((num_dirs, N, 3))
     vols = np.zeros((num_dirs, N))
     mesh_vol = dolfin.assemble(dolfin.Constant(1) * dolfin.dx(geo.mesh))
 
@@ -489,8 +540,8 @@ def postprocess_effect_of_compressibility_disp(
                     / mesh_vol
                 )
 
-                for j, point in enumerate(points):
-                    arr[idx, i, j, :] = u(0, 0, point)
+                arr_center[idx, i, :] = u(0, 0, R)
+                arr_long[idx, i, :] = u(L, 0, 0)
 
                 # if i == gamma.argmax() and plot_slice:
                 #     for name, func in funcs.items():
@@ -510,26 +561,54 @@ def postprocess_effect_of_compressibility_disp(
                 #         plt.savefig(figdir / f"{name}_{kappa}.png")
                 #         plt.close()
 
+    fig, ax = plt.subplots()
+    x = ["Relaxation"] + [f"$\\kappa={k:.0f}$" for k in resultdirs.keys()]
+    y_d = [2 * R] + [
+        2 * (R + np.sqrt(arr_center[idx, 1, 1] ** 2 + arr_center[idx, 1, 2] ** 2))
+        for idx in range(num_dirs)
+    ]
+    ax.bar(x, y_d)
+    ax.set_ylabel("Diameter")
+    ax.grid()
+    fig.savefig(figdir / "results_bar_diameter.png")
+
+    fig, ax = plt.subplots()
+    x = ["Relaxation"] + [f"$\\kappa={k:.0f}$" for k in resultdirs.keys()]
+    y_l = [2 * L] + [2 * (L + arr_long[idx, 1, 0]) for idx in range(num_dirs)]
+    ax.bar(x, y_l)
+    ax.set_ylabel("Length")
+    ax.grid()
+    fig.savefig(figdir / "results_bar_length.png")
+
     fig, ax = plt.subplots(1, 3, figsize=(10, 8))
-    fig_r, ax_r = plt.subplots(figsize=(10, 8))
+    fig_d, ax_d = plt.subplots(figsize=(10, 8))
+    fig_long, ax_long = plt.subplots(figsize=(10, 8))
+
     lines = []
     labels = []
     for idx, kappa in enumerate(resultdirs.keys()):
-        title = "incomp" if kappa is None else rf"$\kappa = {kappa:.0f}$"
+        title = key2title(kappa)
+
         labels.append(title)
         for i in range(3):
-            (l,) = ax[i].plot(t, arr[idx, :, -1, i])
-        y = arr[idx, :, -1, 1]
-        z = arr[idx, :, -1, 2]
+            (l,) = ax[i].plot(t, arr_center[idx, :, i])
+        y = arr_center[idx, :, 1]
+        z = arr_center[idx, :, 2]
         dr = np.sqrt(y**2 + z**2)
 
-        ax_r.plot(t, (R + dr) / R, label=title)
+        ax_d.plot(t, 2 * (R + dr), label=title)
+        ax_long.plot(t, 2 * (L + arr_long[idx, :, 0]), label=title)
+
         lines.append(l)
     lgd = fig.legend(lines, labels, loc="center right")
     fig.subplots_adjust(right=0.87)
-    ax_r.legend()
-    ax_r.set_xlabel("time")
-    ax_r.set_ylabel("radius change")
+    ax_d.legend()
+    ax_d.set_xlabel("time")
+    ax_d.set_ylabel("diameter")
+
+    ax_long.legend()
+    ax_long.set_xlabel("time")
+    ax_long.set_ylabel("length")
 
     for axi in ax:
         axi.set_xlabel("time")
@@ -537,7 +616,8 @@ def postprocess_effect_of_compressibility_disp(
     ax[0].set_title("$x$")
     ax[1].set_title("$y$")
     ax[2].set_title("$z$")
-    fig_r.savefig(figdir / "results_comp_radius.png")
+    fig_d.savefig(figdir / "results_comp_diameter.png")
+    fig_long.savefig(figdir / "results_comp_length.png")
     fig.savefig(
         figdir / "results_comp_xyz.png",
         bbox_extra_artists=(lgd,),
@@ -546,7 +626,7 @@ def postprocess_effect_of_compressibility_disp(
 
     fig, ax = plt.subplots(figsize=(10, 8))
     for idx, kappa in enumerate(resultdirs.keys()):
-        title = "incomp" if kappa is None else rf"$\kappa = {kappa:.0f}$"
+        title = key2title(kappa)
         ax.plot(t, vols[idx, :], label=title)
     ax.legend()
     ax.set_xlabel("time")

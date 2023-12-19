@@ -4,7 +4,7 @@ import gmsh
 import numpy as np
 
 
-def main(datadir="data", char_length=100.0, L=2000, r=400):
+def main(datadir="data", char_length=100.0, L=4000, r=300):
     Path(datadir).mkdir(exist_ok=True, parents=True)
     gmsh.initialize()
     gmsh.model.add("Cell")

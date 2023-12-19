@@ -59,3 +59,33 @@ class Projector:
 
     def __call__(self, u: dolfin.Function, f: ufl.core.expr.Expr) -> None:
         self.project(u=u, f=f)
+
+
+def von_mises(T: ufl.Coefficient) -> ufl.Coefficient:
+    r"""Compute the von Mises stress tensor :math`\sigma_v`, with
+
+    .. math::
+
+        \sigma_v^2 = \frac{1}{2} \left(
+            (\mathrm{T}_{11} - \mathrm{T}_{22})^2 +
+            (\mathrm{T}_{22} - \mathrm{T}_{33})^2 +
+            (\mathrm{T}_{33} - \mathrm{T}_{11})^2 +
+        \right) - 3 \left(
+            \mathrm{T}_{12} + \mathrm{T}_{23} + \mathrm{T}_{31}
+        \right)
+
+    Parameters
+    ----------
+    T : ufl.Coefficient
+        Cauchy stress tensor
+
+    Returns
+    -------
+    ufl.Coefficient
+        The von Mises stress tensor
+    """
+    von_Mises_squared = 0.5 * (
+        (T[0, 0] - T[1, 1]) ** 2 + (T[1, 1] - T[2, 2]) ** 2 + (T[2, 2] - T[0, 0]) ** 2
+    ) + 3 * (T[0, 1] + T[1, 2] + T[2, 0])
+
+    return ufl.sqrt(abs(von_Mises_squared))

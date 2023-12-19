@@ -8,59 +8,7 @@ import ufl_legacy as ufl
 from geometry import load_geometry
 from utils import Projector
 import postprocess
-
-
-class CompressibleProblem(pulse.MechanicsProblem):
-    """
-    This class implements a compressbile model with a penalized
-    compressibility term, solving for the displacement only.
-
-    """
-
-    def __init__(self, *args, kappa=1e3, **kwargs):
-        self.kappa = dolfin.Constant(kappa)
-        super().__init__(*args, *kwargs)
-
-    def _init_spaces(self):
-        mesh = self.geometry.mesh
-
-        element = dolfin.VectorElement("P", mesh.ufl_cell(), 2)
-        self.state_space = dolfin.FunctionSpace(mesh, element)
-        self.state = dolfin.Function(self.state_space)
-        self.state_test = dolfin.TestFunction(self.state_space)
-
-        # Add penalty factor
-
-    def _init_forms(self):
-        u = self.state
-        v = self.state_test
-
-        F = dolfin.variable(pulse.kinematics.DeformationGradient(u))
-        J = pulse.kinematics.Jacobian(F)
-
-        dx = self.geometry.dx
-
-        # Add penalty term
-        internal_energy = self.material.strain_energy(F) + self.kappa * (
-            J * dolfin.ln(J) - J + 1
-        )
-
-        self._virtual_work = dolfin.derivative(
-            internal_energy * dx,
-            self.state,
-            self.state_test,
-        )
-
-        self._virtual_work += self._external_work(u, v)
-
-        self._jacobian = dolfin.derivative(
-            self._virtual_work,
-            self.state,
-            dolfin.TrialFunction(self.state_space),
-        )
-
-        self._set_dirichlet_bc()
-        self._init_solver()
+from compressible_model import CompressibleProblem
 
 
 def ca_transient(t, tstart=0.05, ca_ampl=0.3):
@@ -87,6 +35,7 @@ def run(
     resultsdir="results",
     datadir="data",
     spring=0.1,
+    target_preload=0.0,
     overwrite: bool = False,
     varying_gamma: bool = False,
     kappa: float | None = None,
@@ -164,7 +113,17 @@ def run(
             value=dolfin.Constant(spring), marker=geometry.markers["Left"][0]
         ),
     ]
-    bcs = pulse.BoundaryConditions(dirichlet=[lambda x: []], neumann=[], robin=robin_bc)
+
+    preload = dolfin.Constant(0.0)
+
+    neumann_bc = [
+        pulse.NeumannBC(traction=preload, marker=geometry.markers["Right"][0]),
+        pulse.NeumannBC(traction=-preload, marker=geometry.markers["Left"][0]),
+    ]
+
+    bcs = pulse.BoundaryConditions(
+        dirichlet=[lambda x: []], neumann=neumann_bc, robin=robin_bc
+    )
 
     if kappa is None:
         problem = pulse.MechanicsProblem(geometry, material, bcs)
@@ -211,11 +170,27 @@ def run(
     E_r = dolfin.Function(V_DG1)
     E_c = dolfin.Function(V_DG1)
 
-    N = 50
+    N = 5
     t = np.linspace(0, 1, N)
-    amp = ca_transient(t, ca_ampl=0.2)
+    amp = ca_transient(t, ca_ampl=0.3)
+    t = [0, 0.2, 1.0]
+    amp = [0.0, 0.3, 0.0]
+    # breakpoint()
     np.save(Path(resultsdir) / "t.npy", t)
     np.save(Path(resultsdir) / "gamma.npy", amp)
+
+    if not np.isclose(target_preload, 0.0):
+        pulse.iterate.iterate(
+            problem, preload, target_preload, initial_number_of_steps=20
+        )
+        with dolfin.XDMFFile(output.as_posix()) as f:
+            f.write_checkpoint(
+                problem.state,
+                function_name="u",
+                time_step=0.0,
+                encoding=dolfin.XDMFFile.Encoding.HDF5,
+                append=True,
+            )
 
     for i, (ti, g) in enumerate(zip(t, amp)):
         pulse.iterate.iterate(problem, gamma, g, initial_number_of_steps=20)
@@ -231,9 +206,9 @@ def run(
         sigma = material.CauchyStress(F, p)
         sigma_dev = sigma - (1 / 3) * ufl.tr(sigma) * ufl.Identity(3)
         E = pulse.kinematics.GreenLagrangeStrain(F)
-        rad = F * rad0 / J
-        circ = F * circ0 / J
-        long = F * long0 / J
+        rad = F * rad0
+        circ = F * circ0
+        long = F * long0
 
         proj.project(sigma_xx, dolfin.inner(long, sigma * long))
         proj.project(sigma_r, dolfin.inner(rad, sigma * rad))
@@ -372,7 +347,7 @@ def run_small():
 
 
 def run_compressiblity():
-    kappas = [None, 1, 10, 1e2, 1e3, 1e4, 1e5]
+    kappas = [1, 10, 1e2, 1e3, 1e4]
     resultdirs = {kappa: f"results/kappa{kappa}" for kappa in kappas}
     # for kappa in kappas:
     #     run(
@@ -383,12 +358,38 @@ def run_compressiblity():
     #     )
     # print("Done")
     # exit()
-    postprocess.postprocess_effect_of_compressibility_stress(resultdirs=resultdirs)
-    postprocess.postprocess_effect_of_compressibility_disp(resultdirs=resultdirs)
+    key2title = lambda kappa: "incomp" if kappa is None else rf"$\kappa = {kappa:.0f}$"
+    # postprocess.postprocess_effect_of_compressibility_stress(
+    # resultdirs=resultdirs, key2title=key2title
+    # )
+    postprocess.postprocess_effect_of_compressibility_disp(
+        resultdirs=resultdirs, key2title=key2title
+    )
+
+
+def run_basic_with_preload():
+    preloads = [-10, -8, -6, -4, -2, 0]
+    resultdirs = {
+        preload: f"results/basic_with_preload_{preload}" for preload in preloads
+    }
+    for preload in preloads:
+        run(
+            resultsdir=resultdirs[preload],
+            datadir="data_basic",
+            overwrite=True,
+            target_preload=preload,
+            kappa=1e3,
+        )
+
+    key2title = lambda preload: rf"$F = {preload:.0f}$"
+    postprocess.postprocess_effect_of_compressibility_stress(
+        resultdirs=resultdirs, figdir="figures_preload", key2title=key2title
+    )
 
 
 def main():
-    run_compressiblity()
+    run_basic_with_preload()
+    # run_compressiblity()
     # run_basic()
     # effect_of_spring()
     # run_varing_gamma()

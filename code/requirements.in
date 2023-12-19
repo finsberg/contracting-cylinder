@@ -4,5 +4,6 @@ fenics-pulse
 matplotlib
 h5py
 --no-binary=h5py
-cardiac-geometies
+cardiac-geometries
 ldrb
+numba>=0.57.0
