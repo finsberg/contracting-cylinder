@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pulse
 import matplotlib.pyplot as plt
-
+import seaborn as sns
+import pandas as pd
 
 import numpy as np
 import ufl_legacy as ufl
@@ -36,7 +37,7 @@ def get_geometry():
     return cardiac_geometries.geometry.Geometry.from_folder(geofolder)
 
 
-def load_arrs(arrs_path, output, N):
+def load_arrs(arrs_path, output, gammas, pressures):
     geo = get_geometry()
     ds = dolfin.Measure("ds", domain=geo.mesh, subdomain_data=geo.ffun)
 
@@ -57,27 +58,12 @@ def load_arrs(arrs_path, output, N):
     von_Mises = dolfin.Function(V_DG1)
 
     # u = dolfin.Function(dolfin.VectorFunctionSpace(geo.mesh, "CG", 2))
-    meshvol = dolfin.assemble(dolfin.Constant(1.0) * dolfin.dx(geo.mesh))
-    endo_surface = dolfin.assemble(dolfin.Constant(1.0) * ds(geo.markers["ENDO"][0]))
-    epi_surface = dolfin.assemble(dolfin.Constant(1.0) * ds(geo.markers["EPI"][0]))
-    names = [
-        "sigma_ff",
-        "sigma_ss",
-        "sigma_nn",
-        "sigma_dev_ff",
-        "sigma_dev_ss",
-        "sigma_dev_nn",
-        "E_ff",
-        "E_ss",
-        "E_nn",
-        "von_Mises",
-    ]
-    arrs = {name: np.zeros(N) for name in names}
-    arrs_endo = {name: np.zeros(N) for name in names}
-    arrs_epi = {name: np.zeros(N) for name in names}
+    # meshvol = dolfin.assemble(dolfin.Constant(1.0) * dolfin.dx(geo.mesh))
+    from postprocess import name2latex
 
+    data = []
     with dolfin.XDMFFile(output.as_posix()) as xdmf:
-        for ti in range(N):
+        for ti in range(len(gammas)):
             # xdmf.read_checkpoint(u, "u", ti)
             for i, (func, name) in enumerate(
                 zip(
@@ -85,38 +71,38 @@ def load_arrs(arrs_path, output, N):
                         sigma_ff,
                         sigma_ss,
                         sigma_nn,
-                        sigma_dev_ff,
-                        sigma_dev_ss,
-                        sigma_dev_nn,
                         E_ff,
                         E_ss,
                         E_nn,
-                        von_Mises,
                     ],
                     [
                         "sigma_ff",
                         "sigma_ss",
                         "sigma_nn",
-                        "sigma_dev_ff",
-                        "sigma_dev_ss",
-                        "sigma_dev_nn",
                         "E_ff",
                         "E_ss",
                         "E_nn",
-                        "von_Mises",
                     ],
                 )
             ):
                 xdmf.read_checkpoint(func, name, ti)
-                arrs[name][ti] = dolfin.assemble(func * dolfin.dx(geo.mesh)) / meshvol
-                arrs_endo[name][ti] = (
-                    dolfin.assemble(func * ds(geo.markers["ENDO"][0])) / endo_surface
-                )
-                arrs_epi[name][ti] = (
-                    dolfin.assemble(func * ds(geo.markers["EPI"][0])) / epi_surface
-                )
+                f_arr = func.vector().get_local()
+                # arrs[name][ti] = dolfin.assemble(func * dolfin.dx(geo.mesh)) / meshvol
 
-    np.save(arrs_path, {"avg": arrs, "endo": arrs_endo, "epi": arrs_epi})
+                data.extend(
+                    [
+                        {
+                            "name": name,
+                            "value": fi,
+                            "gamma": gammas[ti],
+                            "pressure": pressures[ti],
+                            "latex": name2latex(name),
+                        }
+                        for fi in f_arr
+                    ]
+                )
+    df = pd.DataFrame(data)
+    df.to_csv(output.with_suffix(".csv").as_posix())
 
 
 def postprocess():
@@ -125,69 +111,118 @@ def postprocess():
 
     gammas = np.load(resultsdir / "gammas.npy")
     pressures = np.load(resultsdir / "pressures.npy")
-    N = len(gammas)
 
     arrs_path = resultsdir / "arrs.npy"
-    if not arrs_path.is_file():
-        load_arrs(arrs_path, output, N)
-    arrs_data = np.load(arrs_path, allow_pickle=True).item()
-    arrs = arrs_data["avg"]
-    arrs_endo = arrs_data["endo"]
-    arrs_epi = arrs_data["epi"]
+    data_path = resultsdir / "results.csv"
+    if not data_path.is_file():
+        load_arrs(arrs_path, output, gammas, pressures)
+    df = pd.read_csv(data_path)
 
-    no_pressure_inds = np.arange(0, 5, dtype=int)
-    pressure_inds = np.arange(5, N, dtype=int)
-    inds = np.arange(N, dtype=int)
+    df_unloaded = df[
+        np.isclose(df["pressure"], df["pressure"].min())
+        & np.isclose(df["gamma"], df["gamma"].max())
+    ]
+    df_unloaded = df_unloaded.assign(label="unloaded")
+    df_loaded = df[
+        np.isclose(df["pressure"], df["pressure"].max())
+        & np.isclose(df["gamma"], df["gamma"].max())
+    ]
+    df_loaded = df_loaded.assign(label="loaded")
+    df1 = pd.concat([df_unloaded, df_loaded])
 
-    # breakpoint()
-    for dev in ["", "_dev"]:
-        fig, ax = plt.subplots(3, 1, sharex=True, figsize=(8, 6))
-        for i, (arrs_, label) in enumerate(
-            zip([arrs, arrs_endo, arrs_epi], ["avg", "endo", "epi"])
-        ):
-            (l1,) = ax[i].plot(inds, arrs_[f"sigma{dev}_ff"])
-            (l2,) = ax[i].plot(inds, arrs_[f"sigma{dev}_ss"])
-            (l3,) = ax[i].plot(inds, arrs_[f"sigma{dev}_nn"])
-            ax[i].grid()
-            ax[i].set_xticks(inds)
-            ax[i].set_xticklabels([])
-            ax[i].set_ylabel(f"stress[kPa] ({label})")
-            ax[i].set_xlim(inds[0], inds[-1])
-
-        # breakpoint()
-
-        ax2 = ax[0].twiny()
-        ax2.set_xticks(inds)
-        ax2.set_xticklabels(pressures)
-        ax[-1].set_xticklabels(gammas)
-        ax[-1].set_xlabel("gamma (activation)")
-        ax2.set_xlabel("pressure")
-
-        lines = (l1, l2, l3)
-        labels = ["ff", "ss", "nn"]
-        # fig.subplots_adjust(top=0.85)
-        lgd = fig.legend(lines, labels, loc="upper center", ncol=3)
-        fig.savefig(
-            resultsdir / f"sigma{dev}.png",
-            bbox_extra_artists=(lgd,),
-            bbox_inches="tight",
-        )
-
-    fig, ax = plt.subplots()
-    ax.plot(inds, arrs["E_ff"], label="ff")
-    ax.plot(inds, arrs["E_ss"], label="ss")
-    ax.plot(inds, arrs["E_nn"], label="nn")
-    ax.set_xticks(inds)
-    ax.set_xticklabels(gammas)
+    df1_stress = df1[df1["name"].isin(["sigma_ff", "sigma_ss", "sigma_nn"])]
+    fig = plt.figure()
+    ax = sns.barplot(
+        data=df1_stress,
+        x="latex",
+        y="value",
+        hue="label",
+        alpha=0.7,
+    )
+    sns.move_legend(
+        ax, "lower center", bbox_to_anchor=(0.5, 1), ncol=3, title=None, frameon=False
+    )
+    ax.set_xlabel("")
+    ax.set_ylabel("stress [kPa]")
     ax.grid()
-    ax2 = ax.twiny()
-    ax2.set_xticks(inds)
-    ax2.set_xticklabels(pressures)
-    ax2.set_xlabel("pressure")
-    ax.set_xlabel("gamma")
+    fig.savefig(resultsdir / "stress.png")  # type: ignore
+    plt.close(fig)
+
+    df1_strain = df1[df1["name"].isin(["E_ff", "E_ss", "E_nn"])]
+    fig = plt.figure()
+    ax = sns.barplot(
+        data=df1_strain,
+        x="latex",
+        y="value",
+        hue="label",
+        alpha=0.7,
+    )
+    sns.move_legend(
+        ax, "lower center", bbox_to_anchor=(0.5, 1), ncol=3, title=None, frameon=False
+    )
+    ax.set_xlabel("")
     ax.set_ylabel("strain")
-    ax.legend()
-    fig.savefig(resultsdir / "strain.png")
+    ax.grid()
+    fig.savefig(resultsdir / "strain.png")  # type: ignore
+    plt.close(fig)
+
+
+def create_paraview_files():
+    resultsdir = Path("output_unloaded_ellipsoid")
+    gammas = np.load(resultsdir / "gammas.npy")
+    output = Path(resultsdir) / "results.xdmf"
+    pvd_output = Path(resultsdir) / "pvd_files"
+    pvd_output.mkdir(exist_ok=True, parents=True)
+    geo = get_geometry()
+
+    #     moving_mesh = dolfin.Mesh(geo.mesh)
+    # V_DG1_new = dolfin.FunctionSpace(moving_mesh, "DG", 1)
+    V_DG1 = dolfin.FunctionSpace(geo.mesh, "DG", 1)
+    V_CG2 = dolfin.VectorFunctionSpace(geo.mesh, "CG", 2)
+    #     V_CG1 = dolfin.VectorFunctionSpace(geo.mesh, "CG", 1)
+    u = dolfin.Function(V_CG2)
+    u.rename("u", "")
+    #     u_prev = dolfin.Function(V_CG2)
+    #     u_diff = dolfin.Function(V_CG2)
+
+    f = dolfin.Function(V_DG1)
+    #     f_new = dolfin.Function(V_DG1_new)
+
+    with dolfin.XDMFFile(output.as_posix()) as xdmf:
+        for ti in range(len(gammas)):
+            print(ti)
+            xdmf.read_checkpoint(u, "u", ti)
+
+            # u_diff.vector()[:] = u.vector()[:] - u_prev.vector()[:]
+            # d = dolfin.interpolate(u_diff, V_CG1)
+            # # dolfin.ALE.move(moving_mesh, d)
+            # breakpoint()
+            # # moving_mesh.coordinates()[:] += d.compute_vertex_values().reshape((-1, 3))
+            # u_prev.vector()[:] = u.vector()[:]
+
+            for i, name in enumerate(
+                [
+                    "sigma_ff",
+                    "sigma_ss",
+                    "sigma_nn",
+                    # "E_ff",
+                    # "E_ss",
+                    # "E_nn",
+                ],
+            ):
+                f.rename(name, "")
+                xdmf.read_checkpoint(f, name, ti)
+                with dolfin.XDMFFile(
+                    (pvd_output / f"{name}_{ti}.xdmf").as_posix()
+                ) as xdmf2:
+                    xdmf2.parameters["functions_share_mesh"] = True
+                    xdmf2.parameters["flush_output"] = True
+
+                    xdmf2.write(u, ti)
+                    xdmf2.write(f, ti)
+                # f_new.vector()[:] = f.vector()[:]
+
+                # dolfin.File(f"pvd_files/{name}_{ti}.pvd") << f_new
 
 
 def main():
@@ -203,7 +238,6 @@ def main():
 
     comm = dolfin.MPI.comm_world
 
-    # Read geometry from file. If the file is not present we regenerate it.
     geo = get_geometry()
 
     V_DG1 = dolfin.FunctionSpace(geo.mesh, "DG", 1)
@@ -285,8 +319,6 @@ def main():
     )
 
     problem = CompressibleProblem(geometry, material, bcs, kappa=1e3)
-    # gammas = [0.0, 0.1, 0.2, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.2, 0.1, 0.0]
-    # pressures = [0.0, 0.0, 0.0, 0.0, 1.0, 2.5, 5.0, 10.0, 20.0, 20.0, 20.0, 20.0]
     gammas = [0.0, 0.3, 0.3]
     pressures = [0.0, 0.0, 15.0]
 
@@ -303,6 +335,7 @@ def main():
             continuation=False,
         )
         u = problem.state
+
         F = pulse.kinematics.DeformationGradient(u)
         J = ufl.det(F)
         sigma = material.CauchyStress(F, p=None)
@@ -326,6 +359,8 @@ def main():
         proj.project(E_ss, dolfin.inner(geo.s0, E * geo.s0))
         proj.project(E_nn, dolfin.inner(geo.n0, E * geo.n0))
         with dolfin.XDMFFile(output.as_posix()) as f:
+            f.parameters["functions_share_mesh"] = True
+            f.parameters["rewrite_function_mesh"] = False
             f.write_checkpoint(
                 u,
                 function_name="u",
@@ -408,3 +443,4 @@ def main():
 if __name__ == "__main__":
     # main()
     postprocess()
+    # create_paraview_files()

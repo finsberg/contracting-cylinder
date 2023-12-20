@@ -48,4 +48,4 @@ def main(datadir="data", char_length=100.0, L=4000, r=300):
 
 if __name__ == "__main__":
     # main()
-    main(datadir="data_basic")
+    main(datadir="data_basic2")

@@ -18,6 +18,22 @@ class Geometry(typing.NamedTuple):
     markers: dict[str, tuple[int, int]]
     marker_functions: MarkerFunctions
 
+    def ds(self, marker: int) -> dolfin.Measure:
+        return dolfin.Measure(
+            "ds",
+            domain=self.mesh,
+            subdomain_data=self.marker_functions.vfun,
+            subdomain_id=marker,
+        )
+
+    def dx(self, marker: int) -> dolfin.Measure:
+        return dolfin.Measure(
+            "dx",
+            domain=self.mesh,
+            subdomain_data=self.marker_functions.cfun,
+            subdomain_id=marker,
+        )
+
 
 def create_mesh(mesh, cell_type):
     # From http://jsdokken.com/converted_files/tutorial_pygmsh.html
@@ -95,6 +111,17 @@ def load_geometry(
         with dolfin.XDMFFile(ffun_path.as_posix()) as infile:
             infile.write(ffun)
 
+    cfun = dolfin.MeshFunction("size_t", mesh, 3)
+    cfun.set_all(0)
+    L = mesh.coordinates().max(0)[0]
+    dolfin.CompiledSubDomain("x[0] < 0.1 * L && x[0] > -0.1 * L", L=L).mark(cfun, 1)
+
+    cfun_path = outdir / "cfun.xdmf"
+    with dolfin.XDMFFile(cfun_path.as_posix()) as infile:
+        infile.write(cfun)
+
     return Geometry(
-        mesh=mesh, markers=markers, marker_functions=MarkerFunctions(ffun=ffun)
+        mesh=mesh,
+        markers=markers,
+        marker_functions=MarkerFunctions(ffun=ffun, cfun=cfun),
     )

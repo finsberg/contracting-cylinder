@@ -7,3 +7,4 @@ h5py
 cardiac-geometries
 ldrb
 numba>=0.57.0
+pandas

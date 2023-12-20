@@ -85,7 +85,6 @@ def run(
         "b_fs": 0.0,
     }
 
-    # matparams = pulse.HolzapfelOgden.default_parameters()
     material = pulse.HolzapfelOgden(
         active_model="active_strain",
         activation=activation,
@@ -94,17 +93,6 @@ def run(
         s0=geometry.s0,
         n0=geometry.n0,
     )
-
-    # matparams = pulse.Guccione.default_parameters()
-    # material = pulse.Guccione(
-    #     active_model="active_strain",
-    #     activation=activation,
-    #     parameters=matparams,
-    #     f0=geometry.f0,
-    #     s0=geometry.s0,
-    #     n0=geometry.n0,
-    # )
-
     robin_bc = [
         pulse.RobinBC(
             value=dolfin.Constant(spring), marker=geometry.markers["Right"][0]
@@ -125,10 +113,7 @@ def run(
         dirichlet=[lambda x: []], neumann=neumann_bc, robin=robin_bc
     )
 
-    if kappa is None:
-        problem = pulse.MechanicsProblem(geometry, material, bcs)
-    else:
-        problem = CompressibleProblem(geometry, material, bcs, kappa=kappa)
+    problem = CompressibleProblem(geometry, material, bcs, kappa=kappa)
 
     W_DG1 = dolfin.VectorFunctionSpace(geometry.mesh, "DG", 1)
     rad0 = dolfin.Function(W_DG1)
@@ -170,40 +155,10 @@ def run(
     E_r = dolfin.Function(V_DG1)
     E_c = dolfin.Function(V_DG1)
 
-    N = 5
-    t = np.linspace(0, 1, N)
-    amp = ca_transient(t, ca_ampl=0.3)
-    t = [0, 0.2, 1.0]
-    amp = [0.0, 0.3, 0.0]
-    # breakpoint()
-    np.save(Path(resultsdir) / "t.npy", t)
-    np.save(Path(resultsdir) / "gamma.npy", amp)
-
-    if not np.isclose(target_preload, 0.0):
-        pulse.iterate.iterate(
-            problem, preload, target_preload, initial_number_of_steps=20
-        )
-        with dolfin.XDMFFile(output.as_posix()) as f:
-            f.write_checkpoint(
-                problem.state,
-                function_name="u",
-                time_step=0.0,
-                encoding=dolfin.XDMFFile.Encoding.HDF5,
-                append=True,
-            )
-
-    for i, (ti, g) in enumerate(zip(t, amp)):
-        pulse.iterate.iterate(problem, gamma, g, initial_number_of_steps=20)
-
-        if kappa is None:
-            u, p = problem.state.split()
-        else:
-            u = problem.state
-            p = None
-
-        F = pulse.kinematics.DeformationGradient(u)
+    def save(U, ti):
+        F = pulse.kinematics.DeformationGradient(U)
         J = ufl.det(F)
-        sigma = material.CauchyStress(F, p)
+        sigma = material.CauchyStress(F, None)
         sigma_dev = sigma - (1 / 3) * ufl.tr(sigma) * ufl.Identity(3)
         E = pulse.kinematics.GreenLagrangeStrain(F)
         rad = F * rad0
@@ -222,21 +177,15 @@ def run(
         proj.project(E_r, dolfin.inner(rad0, E * rad0))
         proj.project(E_c, dolfin.inner(circ0, E * circ0))
         with dolfin.XDMFFile(output.as_posix()) as f:
+            f.parameters["functions_share_mesh"] = True
+            f.parameters["rewrite_function_mesh"] = False
             f.write_checkpoint(
-                u,
+                U,
                 function_name="u",
                 time_step=ti,
                 encoding=dolfin.XDMFFile.Encoding.HDF5,
                 append=True,
             )
-            if p is not None:
-                f.write_checkpoint(
-                    p,
-                    function_name="p",
-                    time_step=ti,
-                    encoding=dolfin.XDMFFile.Encoding.HDF5,
-                    append=True,
-                )
             f.write_checkpoint(
                 sigma_xx,
                 function_name="sigma_xx",
@@ -301,69 +250,64 @@ def run(
                 append=True,
             )
 
+    N = 5
+    t = np.linspace(0, 1, N)
+    amp = ca_transient(t, ca_ampl=0.3)
+    t = [0.2]
+    amp = [0.3]
 
-def run_basic():
-    run(resultsdir="results/basic", datadir="data_basic", overwrite=True)
-    postprocess.postprocess_basic(
-        resultsdir="results/basic", datadir="data_basic", figdir="figures_new/basic"
-    )
+    np.save(Path(resultsdir) / "t.npy", [0.0] + t)
+    np.save(Path(resultsdir) / "gamma.npy", [0.0] + amp)
 
+    if not np.isclose(target_preload, 0.0):
+        pulse.iterate.iterate(
+            problem, preload, target_preload, initial_number_of_steps=20
+        )
 
-def run_basic_smaller_raidius():
-    # run(
-    #     datadir="data_small_radius", resultsdir="results_smaller_radius", overwrite=True
-    # )
-    postprocess.postprocess_basic(
-        datadir="data_small_radius",
-        resultsdir="results_smaller_radius",
-        figdir="figures_smaller_radius",
-    )
-
-
-def run_varing_gamma():
-    run(resultsdir="results_varying_gamma", varying_gamma=True, overwrite=True)
-    postprocess.postprocess_basic(
-        resultsdir="results_varying_gamma", figdir="figures_varying_gamma"
-    )
+    save(problem.state, 0.0)
+    for i, (ti, g) in enumerate(zip(t, amp)):
+        pulse.iterate.iterate(problem, gamma, g, initial_number_of_steps=20)
+        save(problem.state, ti)
 
 
 def effect_of_spring():
-    springs = [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
+    springs = [0.0001, 0.001, 0.01, 0.1, 1.0]
     resultdirs = {spring: f"results/spring{spring}" for spring in springs}
     for spring in springs:
         print("Spring : ", spring)
-        run(resultsdir=resultdirs[spring], spring=spring, datadir="data_basic")
-    postprocess.postprocess_effect_of_spring(resultdirs=resultdirs)
+        run(
+            resultsdir=resultdirs[spring],
+            spring=spring,
+            kappa=1e3,
+            datadir="data_basic",
+        )
 
-
-def run_small():
-    import create_mesh
-
-    datadir = "data_small"
-    create_mesh.main(datadir=datadir, char_length=1.0)
-    run(datadir=datadir, resultsdir="results_small", overwrite=True, spring=10.0)
-    print("Done")
-    postprocess.postprocess_basic(resultsdir="results_small", datadir=datadir)
+    key2title = lambda k: rf"$k = {k}$"
+    postprocess.postprocess_stress(
+        resultdirs=resultdirs, figdir="figures_spring", key2title=key2title
+    )
+    postprocess.postprocess_disp(
+        resultdirs=resultdirs, figdir="figures_spring", key2title=key2title
+    )
 
 
 def run_compressiblity():
     kappas = [1, 10, 1e2, 1e3, 1e4]
     resultdirs = {kappa: f"results/kappa{kappa}" for kappa in kappas}
-    # for kappa in kappas:
-    #     run(
-    #         resultsdir=resultdirs[kappa],
-    #         overwrite=True,
-    #         datadir="data_basic",
-    #         kappa=kappa,
-    #     )
-    # print("Done")
-    # exit()
+    for kappa in kappas:
+        run(
+            resultsdir=resultdirs[kappa],
+            overwrite=True,
+            datadir="data_basic",
+            kappa=kappa,
+        )
+
     key2title = lambda kappa: "incomp" if kappa is None else rf"$\kappa = {kappa:.0f}$"
-    # postprocess.postprocess_effect_of_compressibility_stress(
-    # resultdirs=resultdirs, key2title=key2title
-    # )
-    postprocess.postprocess_effect_of_compressibility_disp(
-        resultdirs=resultdirs, key2title=key2title
+    postprocess.postprocess_stress(
+        resultdirs=resultdirs, figdir="figures_comp", key2title=key2title
+    )
+    postprocess.postprocess_disp(
+        resultdirs=resultdirs, figdir="figures_comp", key2title=key2title
     )
 
 
@@ -372,29 +316,28 @@ def run_basic_with_preload():
     resultdirs = {
         preload: f"results/basic_with_preload_{preload}" for preload in preloads
     }
-    for preload in preloads:
-        run(
-            resultsdir=resultdirs[preload],
-            datadir="data_basic",
-            overwrite=True,
-            target_preload=preload,
-            kappa=1e3,
-        )
+    # for preload in preloads:
+    #     run(
+    #         resultsdir=resultdirs[preload],
+    #         datadir="data_basic",
+    #         overwrite=True,
+    #         target_preload=preload,
+    #         kappa=1e3,
+    #     )
 
     key2title = lambda preload: rf"$F = {preload:.0f}$"
-    postprocess.postprocess_effect_of_compressibility_stress(
+    postprocess.postprocess_stress(
+        resultdirs=resultdirs, figdir="figures_preload", key2title=key2title
+    )
+    postprocess.postprocess_disp(
         resultdirs=resultdirs, figdir="figures_preload", key2title=key2title
     )
 
 
 def main():
-    run_basic_with_preload()
-    # run_compressiblity()
-    # run_basic()
-    # effect_of_spring()
-    # run_varing_gamma()
-    # run_small()
-    # run_basic_smaller_raidius()
+    # run_basic_with_preload()
+    effect_of_spring()
+    run_compressiblity()
 
 
 if __name__ == "__main__":
